@@ -1,0 +1,15 @@
+[project]
+name = "ezscholarsearch"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.78.1",
+    "pdfplumber>=0.11.6",
+    "pillow>=11.2.1",
+    "pymupdf>=1.25.5",
+    "requests>=2.32.3",
+    "scholarly>=1.7.11",
+    "spacy>=3.8.5",
+]
