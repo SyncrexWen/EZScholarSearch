@@ -16,6 +16,3 @@ wheels/
 # log files
 *.log
 .env
-
-# Package Management-generated Files
-uv.lock
