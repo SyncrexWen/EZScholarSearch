@@ -8,6 +8,12 @@ from dataclasses import dataclass, field, fields
 import json
 import os
 
+__all__ = [
+    'Messages',
+    'MessagesMemory',
+    'PubMeta',
+]
+
 
 class Messages:
     '''存储AI交互信息'''

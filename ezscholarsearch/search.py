@@ -5,6 +5,10 @@ from scholarly import scholarly
 from typing import Dict, List, Optional
 from time import sleep
 
+__all__ = [
+    'ScholarSearch',
+]
+
 
 class ScholarSearch:
     def __init__(self, delay: float = 2.0):

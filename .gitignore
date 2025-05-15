@@ -16,3 +16,8 @@ wheels/
 # log files
 *.log
 .env
+
+# test scripts
+tests/
+test_*.py
+debug_*.py

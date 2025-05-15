@@ -4,7 +4,8 @@ from .utils import FILE_CONFIG, DynamicLogger
 from openai import AsyncOpenAI, OpenAI
 from typing import (Tuple, Dict, Any, Union,
                     Iterable, Callable, Type,
-                    Optional, List)
+                    Optional, List, Literal,
+                    Sequence)
 from functools import wraps
 from time import sleep, perf_counter
 from abc import ABC, abstractmethod
@@ -17,6 +18,24 @@ import threading
 import warnings
 import asyncio
 import json
+
+__all__ = [
+    'AsyncOpenAIClient',
+    'OpenAIClient',
+    'DataPacket',
+    'AsyncAIModelFactory',
+    'AsyncAIModel',
+    'AsyncDataProcessor',
+    'AsyncWorkFlow',
+    'AsyncSequentialBlock',
+    'AsyncParallelBlock',
+    'AIModel',
+    'AIModelFactory',
+    'WorkFlow',
+    'DataProcessor',
+    'SequentialBlock',
+    'ParallelBlock',
+]
 
 
 def _handle_openai_error(e: Exception, logger: DynamicLogger):
@@ -571,6 +590,35 @@ class OpenAIClient:
         sys_prt("\b")
 
 
+def _safe_datapacket(func):
+    if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def async_wrapper(data: str | dict | DataPacket):
+            if isinstance(data, str):
+                input_data = DataPacket(content=data)
+            elif isinstance(data, dict):
+                input_data = DataPacket(content=None, metadata=data)
+            elif isinstance(data, DataPacket):
+                input_data = data
+            else:
+                raise TypeError(f"Invalid Input Type {type(data)}")
+            return await func(input_data)
+        return async_wrapper
+    else:
+        @wraps(func)
+        def sync_wrapper(data: str | dict | DataPacket):
+            if isinstance(data, str):
+                input_data = DataPacket(content=data)
+            elif isinstance(data, dict):
+                input_data = DataPacket(content=None, metadata=data)
+            elif isinstance(data, DataPacket):
+                input_data = data
+            else:
+                raise TypeError(f"Invalid Input Type {type(data)}")
+            return func(input_data)
+        return sync_wrapper
+
+
 @dataclass
 class DataPacket:
     '''信息交互协议
@@ -592,7 +640,7 @@ class DataPacket:
         return str(self.content)
 
 
-class AIModelFactory:
+class AsyncAIModelFactory:
     '''AIModel类的实例化工厂
 
     根据特定的base_url, api_key, model创建AIModel的实例
@@ -614,7 +662,8 @@ class AIModelFactory:
 
     def __call__(self, prompt, temperature: float = 0.8,
                  functions: List[Dict[str, Any]] = None,
-                 function_call: str = "auto",) -> "AIModel":
+                 function_call: str = "auto",
+                 output_type: str = 'default') -> "AsyncAIModel":
         '''创建AIModel实例
 
         Args:
@@ -622,22 +671,24 @@ class AIModelFactory:
             temperature: AI回答的随机性
             function_call: AI输出的
         '''
-        return AIModel(
+        return AsyncAIModel(
             prompt=prompt,
             temperature=temperature,
             **self.config,
             functions=functions,
             function_call=function_call,
+            output_type=output_type,
         )
 
 
-class AIModel:
+class AsyncAIModel:
     '''特定功能的AI模型实例，支持system prompt和cuntion calling'''
     def __init__(self, base_url: str, api_key: str,
                  model: str, prompt: str,
                  temperature: float = 0.8,
-                 functions: List[Dict[str, Any]] = [],
-                 function_call: str = 'auto'):
+                 functions: List[Dict[str, Any]] = None,
+                 function_call: str = 'auto',
+                 output_type: str = 'default'):
         '''创建实例
 
         Args:
@@ -661,31 +712,20 @@ class AIModel:
             "functions": functions,
             "function_call": function_call
         }
+        self.output_type = output_type
 
     @retry()
-    async def _ask(self, data: Union[DataPacket, str]) -> DataPacket:
+    @_safe_datapacket
+    async def _ask(self, data: Union[DataPacket, str],) -> DataPacket:
         '''根据输入的data调用AI生成回复'''
-        if isinstance(data, str):
-            input_messages = {
-                "role": "user",
-                "content": data,
-            }
-        elif isinstance(data, DataPacket):
-            if data.validate(str):
-                input_messages = {
-                    "role": "user",
-                    "content": data.content
-                }
-            else:
-                input_messages = {
-                    "role": "user",
-                    "content": "\n".join(
-                        f"{key}: {value}"
-                        for key, value in data.metadata.items())
-                }
+        if data.content:
+            input_messages = {"role": "user", "content": data.content}
         else:
-            raise TypeError(f"Invalid data type {type(data)}")
+            input_messages = {"role": "user",
+                              "content": "\n".join(data.metadata.values())}
         if not input_messages["content"].strip():
+            if self.output_type == 'str':
+                return ''
             return DataPacket(None)
         response = await self.client.chat.completions.create(
             messages=self.messages + [input_messages],
@@ -693,24 +733,24 @@ class AIModel:
         )
         message = response.choices[0].message
 
-        if "function_call" in message:
-            arguments = json.loads(message["function_call"]["arguments"])
-            return DataPacket(
-                content=None,
-                metadata=arguments
-            )
+        function_call = message.function_call
+        if function_call:
+            arguments = json.loads(function_call.arguments)
+            if self.output_type == 'str':
+                return '\n'.join(arguments.values())
+            return DataPacket(content=None, metadata=arguments)
         else:
+            if self.output_type == 'str':
+                return message.content or ""
             return DataPacket(
-                content=message.content,
+                content=message.content or "",
             )
 
-    async def __call__(self, *datas: Union[DataPacket, str]):
-        tasks = [self._ask(data) for data in datas]
-        results = await asyncio.gather(tasks)
-        return results[0] if len(results) == 1 else results
+    async def __call__(self, data: DataPacket | str):
+        return await self._ask(data)
 
 
-class DataProcesser:
+class AsyncDataProcessor:
     '''数据处理器
 
     在SequentialBlock和ParallelBlock中处理信息
@@ -722,36 +762,47 @@ class DataProcesser:
         '''
         self.callback = callback
 
-    async def _process(self, data: DataPacket) -> DataPacket:
+    @_safe_datapacket
+    async def _process(self, data):
         if inspect.isasyncgenfunction(self.callback):
+            return [item async for item in self.callback(data)]
+        elif inspect.iscoroutinefunction(self.callback):
             return await self.callback(data)
         else:
             return await asyncio.to_thread(self.callback, data)
 
-    async def __call__(self, *datas):
-        tasks = [self.callback(data) for data in datas]
-        results = asyncio.gather(tasks)
-        return results[0] if len(results) == 1 else results
+    async def __call__(self, data: DataPacket):
+        return await self._process(data)
 
 
-class WorkFlow(ABC):
+class AsyncWorkFlow(ABC):
     '''定义工作流抽象类'''
     @abstractmethod
     def __init__(self):
         pass
 
     @abstractmethod
-    async def forward(self, data: str):
+    async def forward(self, data: str | DataPacket):
         pass
 
-    async def __call__(self, data: str) -> str:
-        return await self.forward(data)
+    async def post_execution(self, data: str | DataPacket):
+        pass
+
+    async def _post_forward(self, data: str | DataPacket):
+        await self.post_execution(data)
+        return data
+
+    async def __call__(self, data: str | DataPacket) -> DataPacket:
+        data = await self.forward(data)
+        data = await self._post_forward(data)
+        return data
 
 
-class SequentialBlock:
+class AsyncSequentialBlock:
     '''连续工作流板块'''
     def __init__(self, *AIModels: Union[
-        "AIModel", "SequentialBlock", "ParallelBlock", "DataProcesser"
+        "AsyncAIModel", "AsyncSequentialBlock",
+        "AsyncParallelBlock", "AsyncDataProcessor"
     ]):
         self.AIModels = AIModels
 
@@ -762,15 +813,15 @@ class SequentialBlock:
         return new_data
 
 
-class ParallelBlock():
+class AsyncParallelBlock:
     '''平行工作流板块'''
     def __init__(self,
                  input_mapper: Optional[
                      Callable[[DataPacket], Dict[str, DataPacket]]
                      ] = None,
                  **models: Union[
-                     "AIModel", "SequentialBlock",
-                     "ParallelBlock", "DataProcesser"
+                     "AsyncAIModel", "AsyncSequentialBlock",
+                     "AsyncParallelBlock", "AsyncDataProcessor"
                  ]):
         self.kw_models = models
         self.input_mapper = input_mapper
@@ -808,5 +859,251 @@ class ParallelBlock():
         return DataPacket(
             content=ret_data,
             metadata={"source": "ParallelBlock",
-                      "model_outputs": list(self.kw_models.keys())}
+                      "model_keys": list(self.kw_models.keys())}
         )
+
+
+class AIModel:
+    '''特定功能的AI模型实例，支持system prompt和cuntion calling'''
+    def __init__(self,
+                 base_url: str, api_key: str,
+                 model: str, system_prompt: str,
+                 temperature: float = 0.8,
+                 functions: List[Dict[str, Any]] = None,
+                 function_call: str = 'auto',
+                 output_type: str = 'default'):
+        '''创建实例
+
+        Args:
+            base_url: API URL
+            api_key: API Key
+            temperature: AI回复的随机性
+            functions: 传入function calling的函数
+            function_call: 是否使用functions
+        '''
+        self._client = OpenAI(
+            base_url=base_url,
+            api_key=api_key
+        )
+        self._messages = [{
+            'role': 'system',
+            'content': system_prompt,
+        }]
+        self._config = {
+            'model': model,
+            'temperature': temperature,
+            'functions': functions,
+            'function_call': function_call
+        }
+        self.output_type = output_type
+        if self.output_type not in ('default', 'DataPacket', 'str'):
+            raise ValueError("Invalid output type")
+
+    @retry()
+    def _ask(self, data: str | DataPacket) -> DataPacket:
+        '''根据输入的data调用AI生成回复'''
+        if isinstance(data, str):
+            input_message = data
+        elif isinstance(data, DataPacket):
+            if data.content:
+                input_message = data.content
+            else:
+                input_message = "\n".join(data.metadata.values())
+        else:
+            raise TypeError(f"Invalid input type {type(data)}")
+        if not input_message.strip():
+            raise ValueError("Input message cannot be empty")
+        response = self._client.chat.completions.create(
+            **self._config,
+            messages=self._messages + [{"role": "user",
+                                        "content": input_message}]
+        )
+        message = response.choices[0].message
+
+        function_call = message.function_call
+        if function_call:
+            arguments = json.loads(function_call)
+            if self.output_type == 'str':
+                return '\n'.join(arguments.values())
+            else:
+                return DataPacket(content=None, metadata=arguments)
+        else:
+            content = message.content
+            if self.output_type == 'str':
+                return content
+            else:
+                return DataPacket(content=content)
+
+    def __call__(self, data: str | DataPacket) -> DataPacket | str:
+        return self._ask(data)
+
+
+class AIModelFactory:
+    '''创建同步的AIModel'''
+    def __init__(self, base_url: str, api_key: str,
+                 model: str):
+        self.config = {
+            'base_url': base_url,
+            'api_key': api_key,
+            'model': model,
+        }
+
+    def __call__(self, system_prompt: str,
+                 temperature: float = 0.8,
+                 functions: List[Dict[str, Any]] = None,
+                 function_call: str = 'str',
+                 output_type: str = 'default'):
+        return AIModel(
+            **self.config,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            functions=functions,
+            function_call=function_call,
+            output_type=output_type
+        )
+
+
+class CallableABCMeta(type):
+    def __call__(cls, data):
+        instance = cls()
+        return instance.__call__(data)
+
+
+class WorkFlow(ABC, metaclass=CallableABCMeta):
+
+    @abstractmethod
+    def __init__(self):
+        pass
+
+    @abstractmethod
+    def forward(self, data: str | DataPacket):
+        pass
+
+    def post_execution(self, data: str | DataPacket):
+        pass
+
+    def __call__(self, data: str | DataPacket) -> DataPacket:
+        data = self.forward(data)
+        self.post_execution(data)
+        return data
+
+
+class DataProcessor:
+    '''处理str和datapacket的类'''
+    memory = {}
+
+    def __init__(self,
+                 callback: Union[Callable, Sequence[Callable]] = None,
+                 mode: Literal['print', 'noop'] = None,
+                 name: str = None):
+        self.callbacks = []
+
+        match mode:
+            case 'print':
+                self.callbacks.append(self._print)
+            case 'noop':
+                self.callbacks.append(self._noop)
+            case _:
+                pass
+
+        if name and not callback:
+            if name not in DataProcessor.memory:
+                raise ValueError(f"Unreachable key '{name}'")
+            else:
+                stored = DataProcessor.memory.get(name)
+                if isinstance(stored, list):
+                    self.callbacks.extend(stored)
+                else:
+                    self.callbacks.append(stored)
+
+        if callback:
+            if isinstance(callback, Sequence):
+                self.callbacks.extend(callback)
+            else:
+                self.callbacks.append(callback)
+
+            if name:
+                DataProcessor.memory[name] = self.callbacks.copy()
+
+        if not self.callbacks:
+            raise TypeError("No valid callback provided or initialized.")
+
+    @_safe_datapacket
+    def _print(self, data: DataPacket):
+        if data.content:
+            print(data.content)
+        else:
+            print("\n".join(data.metadata.values()))
+        return data
+
+    def _noop(self, data):
+        return data
+
+    def __call__(self, data: str | 'DataPacket'):
+        for cb in self.callbacks:
+            data = cb(data)
+        return data
+
+    def __rshift__(self, other: Callable):
+        self.callbacks.append(other)
+        return self
+
+
+class SequentialBlock:
+    '''连续AI模块'''
+    def __init__(
+        self,
+        *AIModels: (
+            "AIModel"
+            | "DataProcessor"
+            | "SequentialBlock"
+            | "ParallelBlock"
+        )
+    ):
+        self.AIModels = AIModels
+
+    @_safe_datapacket
+    def __call__(self, data):
+        for ai in self.AIModels:
+            data = ai(data)
+        return data
+
+
+class ParallelBlock:
+    """并行 AI 模块"""
+
+    def __init__(self,
+                 **models: (
+                     "AIModel"
+                     | "DataProcessor"
+                     | "SequentialBlock"
+                     | "ParallelBlock"
+                 )):
+        self.models = models
+
+    @_safe_datapacket
+    def __call__(self, data: DataPacket):
+        inputs = {}
+
+        if data.metadata:
+            inputs = {
+                key: data.metadata[key]
+                for key in self.models
+                if key in data.metadata
+            }
+
+        if not inputs and data.content:
+            inputs = {
+                key: data.content
+                for key in self.models
+            }
+
+        if not inputs:
+            raise ValueError("ParallelBlock 输入错误：未提供有效输入。")
+
+        outputs = {
+            key: self.models[key](input_value)
+            for key, input_value in inputs.items()
+        }
+
+        return DataPacket(content=None, metadata=outputs)

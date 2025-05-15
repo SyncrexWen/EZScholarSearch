@@ -15,9 +15,21 @@ import re
 import requests
 import fitz
 import pdfplumber
-import spacy
 import urllib
 
+
+__all__ = [
+    # 'DEFAULT_CONFIG',
+    # 'FILE_CONFIG',
+    # 'get_default_log_config',
+    # 'get_file_log_config',
+    # 'LoggingConfigurator',
+    # 'DynamicLogger'
+    'AsyncScholarly',
+    'PubDownloader',
+    'BasePDFParser',
+    'AdvancedPDFParser',
+]
 
 # 默认的日志器配置，记录到控制台和文件
 DEFAULT_CONFIG = {
@@ -87,8 +99,6 @@ FILE_CONFIG = {
         "handlers": ["file"],
     }
 }
-
-nlp = spacy.load("en_core_web_sm")
 
 
 def get_default_log_config():
