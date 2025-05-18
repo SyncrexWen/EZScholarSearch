@@ -12,6 +12,7 @@ __all__ = [
     'Messages',
     'MessagesMemory',
     'PubMeta',
+    'Paper',
 ]
 
 
@@ -657,3 +658,61 @@ class PubMeta:
     def __post_init__(self):
         if isinstance(self.bib, dict):
             self.bib = BibMeta(**self.bib)
+
+
+@safe_dataclass
+@dataclass
+class PaperSection:
+    heading: str
+    content: str
+
+    def to_dict(self):
+        return {"heading": self.heading, "content": self.content}
+
+    def flatten(self):
+        return f"##{self.heading}\n\n{self.content}"
+
+
+@safe_dataclass
+@dataclass
+class Paper:
+    title: Optional[str]
+    authors: List[str]
+    abstract: Optional[str]
+    sections: List[PaperSection]
+
+    def __post_init__(self):
+        if isinstance(self.authors, str):
+            self.authors = [self.authors]
+        elif self.authors is None:
+            self.authors = []
+        self.sections = [
+            section if isinstance(section, PaperSection)
+            else PaperSection(**section)
+            for section in self.sections
+        ]
+
+    def to_dict(self):
+        return {
+            'title': self.title,
+            'authors': self.authors,
+            'abstract': self.abstract,
+            'sections': [section.to_dict() for section in self.sections]
+        }
+
+    def to_flatten_dict(self):
+        return {
+            'title': self.title,
+            'authors': self.authors,
+            'abstract': self.abstract,
+            **{
+                f"sections {i}": self.sections[i].flatten()
+                for i in range(len(self.sections))
+            }
+        }
+
+    def flatten(self):
+        return "\n---\n".join([
+            f"#{key}\n\n{value}"
+            for key, value in self.to_flatten_dict().items()
+        ])

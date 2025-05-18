@@ -4,17 +4,18 @@ from . import datastructs as _datastructs
 from . import search as _search
 from . import utils as _utils
 
-from .AI import (
-    AsyncOpenAIClient, OpenAIClient,
-    AIModelFactory, AIModel, WorkFlow,
-    DataPacket, ParallelBlock, SequentialBlock
+from .AI import ( 
+    OpenAIClient, AIModel, WorkFlow,
+    DataPacket, ParallelBlock, SequentialBlock,
+    SequenceProcessor, MultiThreadsSequenceProcessor,
 )
 from .search import (
     ScholarSearch
 )
 from .utils import (
     AsyncScholarly, PubDownloader,
-    BasePDFParser, AdvancedPDFParser
+    BasePDFParser, AdvancedPDFParser,
+    GrobidPDFParser
 )
 from .datastructs import (
     Messages, MessagesMemory,

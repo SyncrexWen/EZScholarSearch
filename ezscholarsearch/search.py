@@ -4,6 +4,7 @@ from .datastructs import PubMeta
 from scholarly import scholarly
 from typing import Dict, List, Optional
 from time import sleep
+from warnings import warn
 
 __all__ = [
     'ScholarSearch',
@@ -17,8 +18,12 @@ class ScholarSearch:
     def _delay(self) -> None:
         sleep(self.delay)
 
+    @staticmethod
+    def config_api_email(email: str):
+        PubDownloader.config_api_email(email)
+
     def search_author(self, author_name: str, max_results: int = 1
-                      ) -> dict | List[Dict]:
+                      ) -> List[Dict]:
         query = scholarly.search_author(author_name)
         ret = []
         for _ in range(max_results):
@@ -29,20 +34,20 @@ class ScholarSearch:
                 self._delay()
             except StopIteration:
                 break
-        return ret[0] if len(ret) == 1 else ret
+        return ret
 
-    def search_authors(self, *author_names: str) -> dict | List[Dict]:
+    def search_authors(self, *author_names: str) -> List[Dict]:
         ret = []
         for author_name in author_names:
             author = next(scholarly.search_author(author_name))
             author_filled = scholarly.fill(author)
             ret.append(author_filled)
             self._delay()
-        return ret[0] if len(ret) == 1 else ret
+        return ret
 
     def search_pubs(self, pubs: str,
                     max_results: int = 3
-                    ) -> PubMeta | List[PubMeta]:
+                    ) -> List[PubMeta]:
         search_query = scholarly.search_pubs(pubs)
         ret = []
         for _ in range(max_results):
@@ -54,7 +59,7 @@ class ScholarSearch:
                 self._delay()
             except StopIteration:
                 break
-        return ret[0] if len(ret) == 1 else ret
+        return ret
 
     def advanced_search(self, keyword: Optional[str] = None,
                         author: Optional[str] = None,
@@ -85,7 +90,22 @@ class ScholarSearch:
             print(f"Error during advanced search: {e}")
         return results
 
-    def download_pub(self, filled_pub: dict,
-                     saving_dir: Optional[str] = None
-                     ) -> str | None:
-        return PubDownloader.download(filled_pub, saving_dir)
+    def download_pubs(self, *filled_pubs: PubMeta,
+                      saving_dir: Optional[str] = None
+                      ) -> tuple[List[str], int]:
+        paths = []
+        cnt = fail_cnt = 0
+        for pub in filled_pubs:
+            try:
+                cnt += 1
+                path = PubDownloader.download(pub, saving_dir=saving_dir)
+                paths.append(path)
+            except Exception as e:
+                warn(
+                    f"\nException when download the pub {cnt}:"
+                    f"\n\tTitle: {pub.bib.title}"
+                    f"\n\tURL: {pub.eprint_url}"
+                    f"\n\tException: {e}"
+                    )
+                fail_cnt += 1
+        return paths, cnt - fail_cnt

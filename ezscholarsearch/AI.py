@@ -10,6 +10,7 @@ from functools import wraps
 from time import sleep, perf_counter
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 
 import openai
 import inspect
@@ -20,21 +21,23 @@ import asyncio
 import json
 
 __all__ = [
-    'AsyncOpenAIClient',
+    # 'AsyncOpenAIClient',
     'OpenAIClient',
     'DataPacket',
-    'AsyncAIModelFactory',
-    'AsyncAIModel',
-    'AsyncDataProcessor',
-    'AsyncWorkFlow',
-    'AsyncSequentialBlock',
-    'AsyncParallelBlock',
+    # 'AsyncAIModelFactory',
+    # 'AsyncAIModel',
+    # 'AsyncDataProcessor',
+    # 'AsyncWorkFlow',
+    # 'AsyncSequentialBlock',
+    # 'AsyncParallelBlock',
     'AIModel',
     'AIModelFactory',
     'WorkFlow',
     'DataProcessor',
     'SequentialBlock',
     'ParallelBlock',
+    'SequenceProcessor',
+    'MultiThreadsSequenceProcessor',
 ]
 
 
@@ -908,7 +911,10 @@ class AIModel:
             if data.content:
                 input_message = data.content
             else:
-                input_message = "\n".join(data.metadata.values())
+                input_message = "\n---\n".join([
+                    f"#{kw}\n\n{value}"
+                    for kw, value in data.metadata.items()
+                ])
         else:
             raise TypeError(f"Invalid input type {type(data)}")
         if not input_message.strip():
@@ -959,14 +965,14 @@ class AIModelFactory:
             temperature=temperature,
             functions=functions,
             function_call=function_call,
-            output_type=output_type
+            output_type=output_type,
         )
 
 
 class CallableABCMeta(type):
     def __call__(cls, data):
         instance = cls()
-        return instance.__call__(data)
+        return instance(data)
 
 
 class WorkFlow(ABC, metaclass=CallableABCMeta):
@@ -1107,3 +1113,25 @@ class ParallelBlock:
         }
 
         return DataPacket(content=None, metadata=outputs)
+
+
+class SequenceProcessor:
+    '''平行处理序列'''
+    def __init__(self, callback: Callable):
+        self.callback = callback
+
+    def __call__(self, sequence: Iterable = None) -> List[Any]:
+        return [
+            self.callback(task) for task in sequence
+        ]
+
+
+class MultiThreadsSequenceProcessor:
+    '''多线程处理任务序列'''
+    def __init__(self, callback: Callable, max_workers: int = 5):
+        self.callback = callback
+        self.max_workers = max_workers
+
+    def __call__(self, sequence: Iterable):
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            return list(executor.map(self.callback, sequence))

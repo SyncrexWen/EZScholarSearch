@@ -1,3 +1,5 @@
+from .datastructs import Paper, PubMeta
+
 from scholarly import scholarly
 from typing import Dict, List, Union, Optional, Any
 from copy import deepcopy
@@ -5,6 +7,9 @@ from urllib.parse import urlparse
 from pathlib import Path
 from io import BytesIO
 from PIL import Image
+from datetime import datetime
+from bs4 import BeautifulSoup
+from warnings import warn
 
 import logging
 import logging.config
@@ -25,10 +30,11 @@ __all__ = [
     # 'get_file_log_config',
     # 'LoggingConfigurator',
     # 'DynamicLogger'
-    'AsyncScholarly',
+    # 'AsyncScholarly',
     'PubDownloader',
     'BasePDFParser',
     'AdvancedPDFParser',
+    'GrobidPDFParser',
 ]
 
 # 默认的日志器配置，记录到控制台和文件
@@ -329,7 +335,7 @@ class PubDownloader:
         PubDownloader.DEFAULT_DIR = dir
 
     @staticmethod
-    def download(pub: dict, saving_dir: str = DEFAULT_DIR) -> str | None:
+    def download(pub: PubMeta, saving_dir: str = DEFAULT_DIR) -> str | None:
         '''下载pdf文献
 
         Args:
@@ -338,34 +344,62 @@ class PubDownloader:
         '''
         os.makedirs(saving_dir, exist_ok=True)
         title = PubDownloader._get_filename(
-            pub.get("bib", {}).get("title", "untitled")
+            pub.bib.title or (
+                'untitled ' +
+                datetime.now().strftime(r"%h%m%s-%Y%M%d")
+            )
         )
 
         # eprint_url download
-        pdf_url = pub.get("eprint_url")
+        pdf_url = pub.eprint_url
         if pdf_url and PubDownloader._is_pdf_path(pdf_url):
-            return PubDownloader._download_pdf(pdf_url, title, saving_dir)
+            try:
+                return PubDownloader._download_pdf(pdf_url, title, saving_dir)
+            except Exception:
+                # warn(
+                #     f"Fail to download {pub.bib.title} through eprint url"
+                # )
+                pass
 
         # arXiv download
-        url = pub.get("pub_url") or pub.get("bib", {}).get("url")
+        url = pub.pub_url or pub.bib.url
         if url and "arxiv.org" in url:
             pdf_url = PubDownloader._parse_arxiv_pdf_url(url)
             if pdf_url:
-                return PubDownloader._download_pdf(pdf_url, title, saving_dir)
+                try:
+                    return PubDownloader._download_pdf(pdf_url,
+                                                       title,
+                                                       saving_dir)
+                except Exception:
+                    # warn(
+                    #     f"Fail to download {pub.bib.title} through arXiv"
+                    # )
+                    pass
 
         # unpaywall download
-        doi = pub.get('bib', {}).get('doi')
+        doi = pub.bib.doi
         if doi and PubDownloader.UNPAYWALL_API:
             pdf_url = PubDownloader._paarse_unpaywall_pdf_url(doi)
             if pdf_url:
-                return PubDownloader._download_pdf(pdf_url, title, saving_dir)
+                try:
+                    return PubDownloader._download_pdf(pdf_url,
+                                                       title,
+                                                       saving_dir)
+                except Exception:
+                    # warn(
+                    #     f"Fail to download {pub.bib.title} through unpaywall"
+                    # )
+                    pass
 
         return None
 
     @staticmethod
     def _get_filename(name: str) -> str:
         '''去除非法符号，获取文件名'''
-        return re.sub(r'[<>:"/\\|?*]', name).strip()
+        return (
+            re.sub(r'[<>:"/\\|?*]', name).strip()
+            or 'untitled ' + datetime.now().strftime(r"%h%m%s-%Y%M%d")
+        )
 
     @staticmethod
     def _download_pdf(pdf_url: str, title: str, saving_dir: str) -> str | None:
@@ -748,3 +782,156 @@ class AdvancedPDFParser:
             logging.error(f"Error extracting "
                           f"images from {pdf_path_or_url}: {e}")
             return []
+
+
+class GrobidPDFParser:
+    '''使用Grobid解析pdf
+
+    使用之前请确保Grobid被部署到本地
+    '''
+    local_port = None
+
+    @staticmethod
+    def config_local_port(port: int):
+        GrobidPDFParser.local_port = port
+
+    @staticmethod
+    def parse_pdf(pdf_path_or_url: str,
+                  clean_tmp_file: bool = True,
+                  default_port: int = 8070) -> Paper:
+        '''解析pdf，支持文件路径及pdf url
+
+        Args:
+            pdf_path_or_url: pdf文件路径或pdf url
+            clean_tmp_file: 是否删除临时文件
+
+        Returns:
+            解析的pdf内容字典
+        '''
+        if not GrobidPDFParser.local_port:
+            raise ValueError(
+                "Please use GrobidPDFParser.config_local_port to config a port"
+                " before parse"
+            )
+
+        isurl = False
+        port = GrobidPDFParser.local_port or default_port
+        GrobidPDFParser.config_local_port(port)
+
+        if not GrobidPDFParser._is_grobid_available(port):
+            raise RuntimeError(
+                f"Grobid 服务未在 localhost:{port} 上运行。\n"
+                f"你可以使用以下命令启动本地 Grobid:\n"
+                f"docker run -t --rm -p {port}:8070 lfoppiano/grobid:0.8.0"
+            )
+
+        if (
+            pdf_path_or_url.startswith("http://")
+            or pdf_path_or_url.startswith("https://")
+        ):
+            pdf_path = GrobidPDFParser._handle_pdf_url(pdf_path_or_url)
+            isurl = True
+        else:
+            pdf_path = pdf_path_or_url
+        with open(pdf_path, 'rb') as file:
+            response = requests.post(
+                (
+                    f"http://localhost:{port}"
+                    "/api/processFulltextDocument"
+                ),
+                files={"input": file}
+            )
+            if response.status_code != 200:
+                raise RuntimeError("Fail to request Grobid" + response.text)
+        xml_content = response.content
+        parsed_content = GrobidPDFParser._parse_grobid_xml(xml_content)
+        if isurl and clean_tmp_file:
+            os.remove(pdf_path)
+
+        return Paper(**parsed_content)
+
+    @staticmethod
+    def _handle_pdf_url(pdf_url: str) -> str:
+        '''处理pdf url
+
+        下载临时文件，并返回文件路径
+        '''
+        os.makedirs("temp-pdfs", exist_ok=True)
+        date_str = datetime.now().strftime(r"%h%m%s-%Y%M%d")
+        temp_file_name = "temp-" + date_str + ".pdf"
+        file_path = os.path.join("temp-pdfs", temp_file_name)
+
+        response = requests.get(pdf_url, timeout=15)
+        if response.ok and "pdf" in response.headers.get(
+                "Content-Type", ""
+                ):
+            with open(file_path, 'wb') as file:
+                file.write(response.content)
+            return file_path
+        else:
+            raise ValueError("Invalid url input")
+
+    @staticmethod
+    def _parse_grobid_xml(xml_text):
+        '''模块化解析xml'''
+        soup = BeautifulSoup(xml_text, "xml")
+
+        title_tag = soup.find("titleStmt")
+        title = None
+        if title_tag:
+            title_el = title_tag.find("title")
+            title = title_el.text.strip() if title_el else None
+
+        authors = []
+        for author_tag in soup.find_all("author"):
+            pers = author_tag.find("persName")
+            if pers:
+                forename = pers.find("forename")
+                surname = pers.find("surname")
+                full_name = []
+                if forename:
+                    full_name.append(forename.text.strip())
+                if surname:
+                    full_name.append(surname.text.strip())
+                if full_name:
+                    authors.append(" ".join(full_name))
+
+        abstract = ""
+        abstract_tag = soup.find("abstract")
+        if abstract_tag:
+            abstract = " ".join(
+                p.get_text(strip=True)
+                for p in abstract_tag.find_all("p")
+            )
+
+        sections = []
+        for div in soup.find_all("div"):
+            heading_tag = div.find("head")
+            if heading_tag:
+                heading = heading_tag.get_text(strip=True)
+                content = " ".join(
+                    p.get_text(strip=True)
+                    for p in div.find_all("p")
+                )
+                if content:
+                    sections.append({"heading": heading, "content": content})
+
+        return {
+            "title": title,
+            "authors": authors,
+            "abstract": abstract,
+            "sections": sections
+        }
+
+    @staticmethod
+    def _is_grobid_available(port: int) -> bool:
+        try:
+            test_url = f"http://localhost:{port}/api/isalive"
+            response = requests.get(test_url, timeout=2)
+            return response.ok
+        except Exception:
+            return False
+
+
+if __name__ == '__main__':
+    warn()
