@@ -632,6 +632,7 @@ class DataPacket:
     '''
     content: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+    property: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self, expected_type: type = str):
         '''检测content类型是否如预期'''
@@ -903,8 +904,10 @@ class AIModel:
             raise ValueError("Invalid output type")
 
     @retry()
-    def _ask(self, data: str | DataPacket) -> DataPacket:
+    @_safe_datapacket
+    def _ask(self, data: DataPacket) -> DataPacket:
         '''根据输入的data调用AI生成回复'''
+        properties = data.property
         if isinstance(data, str):
             input_message = data
         elif isinstance(data, DataPacket):
@@ -932,13 +935,15 @@ class AIModel:
             if self.output_type == 'str':
                 return '\n'.join(arguments.values())
             else:
-                return DataPacket(content=None, metadata=arguments)
+                return DataPacket(content=None,
+                                  metadata=arguments,
+                                  property=properties)
         else:
             content = message.content
             if self.output_type == 'str':
                 return content
             else:
-                return DataPacket(content=content)
+                return DataPacket(content=content, property=properties)
 
     def __call__(self, data: str | DataPacket) -> DataPacket | str:
         return self._ask(data)
@@ -1046,8 +1051,10 @@ class DataProcessor:
         return data
 
     def __call__(self, data: str | 'DataPacket'):
+        properties = data.property
         for cb in self.callbacks:
             data = cb(data)
+        data.property = properties
         return data
 
     def __rshift__(self, other: Callable):
@@ -1069,7 +1076,7 @@ class SequentialBlock:
         self.AIModels = AIModels
 
     @_safe_datapacket
-    def __call__(self, data):
+    def __call__(self, data: DataPacket):
         for ai in self.AIModels:
             data = ai(data)
         return data

@@ -663,19 +663,23 @@ class PubMeta:
 @safe_dataclass
 @dataclass
 class PaperSection:
+    '''解析文献pdf每个部分的内容'''
     heading: str
     content: str
 
     def to_dict(self):
+        '''以字典形式输出'''
         return {"heading": self.heading, "content": self.content}
 
     def flatten(self):
+        '''以MarkDown字符串形式展示'''
         return f"##{self.heading}\n\n{self.content}"
 
 
 @safe_dataclass
 @dataclass
 class Paper:
+    '''解析文献内容'''
     title: Optional[str]
     authors: List[str]
     abstract: Optional[str]
@@ -693,6 +697,7 @@ class Paper:
         ]
 
     def to_dict(self):
+        '''以字典形式展示文献内容'''
         return {
             'title': self.title,
             'authors': self.authors,
@@ -701,6 +706,7 @@ class Paper:
         }
 
     def to_flatten_dict(self):
+        '''展开每个Section字段的字典'''
         return {
             'title': self.title,
             'authors': self.authors,
@@ -712,6 +718,7 @@ class Paper:
         }
 
     def flatten(self):
+        '''以MarkDown形式展示文献'''
         return "\n---\n".join([
             f"#{key}\n\n{value}"
             for key, value in self.to_flatten_dict().items()
