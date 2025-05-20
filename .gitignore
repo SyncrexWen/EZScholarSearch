@@ -21,3 +21,5 @@ wheels/
 tests/
 test_*.py
 debug_*.py
+test_*.txt
+test_tmp_files/

@@ -600,7 +600,7 @@ class OpenAIClient:
 def _strf_datapacket(func):
     if inspect.iscoroutinefunction(func):
         @wraps(func)
-        async def async_wrapper(self, data: str | dict | DataPacket):
+        async def async_wrapper(self, data: str | dict | DataPacket, *args, **kwargs):
             if isinstance(data, str):
                 input_data = DataPacket(content=data)
             elif isinstance(data, dict):
@@ -609,11 +609,11 @@ def _strf_datapacket(func):
                 input_data = data
             else:
                 raise TypeError(f"Invalid Input Type {type(data)}")
-            return await func(self, input_data)
+            return await func(self, input_data, *args, **kwargs)
         return async_wrapper
     else:
         @wraps(func)
-        def sync_wrapper(self, data: str | dict | DataPacket):
+        def sync_wrapper(self, data: str | dict | DataPacket, *args, **kwargs):
             if isinstance(data, str):
                 input_data = DataPacket(content=data)
             elif isinstance(data, dict):
@@ -622,33 +622,35 @@ def _strf_datapacket(func):
                 input_data = data
             else:
                 raise TypeError(f"Invalid Input Type {type(data)}")
-            return func(self, input_data)
+            return func(self, input_data, *args, **kwargs)
         return sync_wrapper
 
 
 def _sequencef_datapacket(func):
     @wraps(func)
-    def wrapper(self, data: DataPacket | Any):
+    def wrapper(self, data: DataPacket | Any, *args, **kwargs):
         if isinstance(data, DataPacket):
             if isinstance(data.content, abcIterable):
-                return func(self, data.content)
+                return func(self, data.content, *args, **kwargs)
             else:
-                return func(self, data.metadata.values)
+                return func(self, data.metadata.values, *args, **kwargs)
         else:
             if isinstance(data, abcIterable):
-                return func(self, data)
+                return func(self, data, *args, **kwargs)
             else:
-                return func(self, [data])
+                return func(self, [data], *args, **kwargs)
     return wrapper
 
 
 def _safe_datapacket(func):
     @wraps(func)
-    def wrapper(self, data: Any):
+    def wrapper(self, data: Any, *args, **kwargs):
         if isinstance(data, DataPacket):
-            return func(self, data)
+            return func(self, data, *args, **kwargs)
+        elif isinstance(data, dict):
+            return func(self, DataPacket(content=None, metadata=data), *args, **kwargs)
         else:
-            return func(self, DataPacket(content=data))
+            return func(self, DataPacket(content=data), *args, **kwargs)
     return wrapper
 
 
@@ -659,11 +661,9 @@ class DataPacket:
     Args:
         content: 数据内容
         metadata: 数据标记，用于传入的function calling，定义数据的结构
-        property: 数据标签
     '''
     content: Any
     metadata: Dict[str, Any] = field(default_factory=dict)
-    property: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self, expected_type: type = str):
         '''检测content类型是否如预期'''
@@ -904,8 +904,8 @@ class AIModel:
                  base_url: str, api_key: str,
                  model: str, system_prompt: str,
                  temperature: float = 0.8,
-                 functions: List[Dict[str, Any]] = None,
-                 function_call: str = 'auto',
+                 tools: List[Dict[str, Any]] = None,
+                 tool_choice: str = 'auto',
                  output_type: str = 'default'):
         '''创建实例
 
@@ -927,8 +927,8 @@ class AIModel:
         self._config = {
             'model': model,
             'temperature': temperature,
-            'functions': functions,
-            'function_call': function_call
+            'tools': tools,
+            'tool_choice': tool_choice
         }
         self.output_type = output_type
         if self.output_type not in ('default', 'DataPacket', 'str'):
@@ -936,48 +936,51 @@ class AIModel:
 
     @retry()
     @_strf_datapacket
-    def _ask(self, data: DataPacket) -> DataPacket:
-        '''根据输入的data调用AI生成回复'''
-        properties = data.property
-        if isinstance(data, str):
-            input_message = data
-        elif isinstance(data, DataPacket):
-            if data.content:
-                input_message = data.content
-            else:
-                input_message = "\n---\n".join([
-                    f"#{kw}\n\n{value}"
-                    for kw, value in data.metadata.items()
-                ])
-        else:
-            raise TypeError(f"Invalid input type {type(data)}")
+    def _ask(self, data: DataPacket, output_type: str = None) -> DataPacket:
+        '''根据输入的data调用AI生成回复（兼容 tools call 机制）'''
+        input_message = data.content or "\n---\n".join([
+            f"# {key}\n\n{value}"
+            for key, value in data.metadata.items()
+        ])
+
         if not input_message.strip():
             raise ValueError("Input message cannot be empty")
+
         response = self._client.chat.completions.create(
             **self._config,
-            messages=self._messages + [{"role": "user",
-                                        "content": input_message}]
+            messages=self._messages + [{"role": "user", "content": input_message}],
         )
-        message = response.choices[0].message
 
-        function_call = message.function_call
-        if function_call:
-            arguments = json.loads(function_call)
-            if self.output_type == 'str':
-                return '\n'.join(arguments.values())
+        message = response.choices[0].message
+        output_type = output_type or self.output_type
+
+        tool_calls = getattr(message, "tool_calls", None)
+
+        if tool_calls:
+            tool_call = tool_calls[0]
+            arguments_json = tool_call.function.arguments
+            try:
+                arguments = json.loads(arguments_json)
+            except Exception as e:
+                raise ValueError(f"Failed to parse tool arguments: {e}")
+
+            if output_type == 'str':
+                return '\n---\n'.join([
+                    f"# {title}\n\n{content}\n"
+                    for title, content in arguments.items()
+                ])
             else:
                 return DataPacket(content=None,
-                                  metadata=arguments,
-                                  property=properties)
+                                metadata=arguments,)
         else:
             content = message.content
-            if self.output_type == 'str':
+            if output_type == 'str':
                 return content
             else:
-                return DataPacket(content=content, property=properties)
+                return DataPacket(content=content) 
 
-    def __call__(self, data: str | DataPacket) -> DataPacket | str:
-        return self._ask(data)
+    def __call__(self, data: str | DataPacket, output_type: str = None) -> DataPacket | str:
+        return self._ask(data, output_type=output_type)
 
 
 class AIModelFactory:
@@ -992,15 +995,15 @@ class AIModelFactory:
 
     def __call__(self, system_prompt: str,
                  temperature: float = 0.8,
-                 functions: List[Dict[str, Any]] = None,
-                 function_call: str = 'str',
+                 tools: List[Dict[str, Any]] = None,
+                 tool_choice: str = 'auto',
                  output_type: str = 'default'):
         return AIModel(
             **self.config,
             system_prompt=system_prompt,
             temperature=temperature,
-            functions=functions,
-            function_call=function_call,
+            tools=tools,
+            tool_choice=tool_choice,
             output_type=output_type,
         )
 
@@ -1031,7 +1034,10 @@ class WorkFlow(ABC, metaclass=CallableABCMeta):
 
 
 class DataProcessor:
-    '''处理str和datapacket的类'''
+    '''处理datapacket的类
+
+    输入的callback函数需要接收DataPacket并输出DataPacket
+    '''
     memory = {}
 
     def __init__(self,
@@ -1083,10 +1089,8 @@ class DataProcessor:
 
     @_safe_datapacket
     def __call__(self, data: DataPacket):
-        properties = data.property
         for cb in self.callbacks:
             data = cb(data)
-        data.property = properties
         return data
 
     def __rshift__(self, other: Callable):
@@ -1147,7 +1151,12 @@ class ParallelBlock:
             raise ValueError("ParallelBlock 输入错误：未提供有效输入。")
 
         outputs = {
-            key: self.models[key](input_value)
+            key: (
+                response := self.models[key](input_value)
+            ).content or "\n---\n".join([
+                f"## {key}\n\n{value}"
+                for key, value in response.metadata.items()
+            ])
             for key, input_value in inputs.items()
         }
 

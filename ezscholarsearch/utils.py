@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from .datastructs import Paper, PubMeta
 
 from scholarly import scholarly
-from typing import Dict, List, Union, Optional, Any
+from typing import Dict, List, Union, Optional, Any, Literal
 from copy import deepcopy
 from urllib.parse import urlparse
 from pathlib import Path
@@ -35,6 +37,8 @@ __all__ = [
     'BasePDFParser',
     'AdvancedPDFParser',
     'GrobidPDFParser',
+    'ToolBuilder',
+    'ToolRegistry',
 ]
 
 # 默认的日志器配置，记录到控制台和文件
@@ -931,6 +935,64 @@ class GrobidPDFParser:
             return response.ok
         except Exception:
             return False
+
+
+class ToolBuilder:
+    type_map = {
+        str: "string",
+        int: "integer",
+        float: "number",
+        bool: "boolean",
+        list: "array",
+        dict: "object"
+    }
+
+    def __init__(self, name: str, description: str = ''):
+        self.name = name
+        self.description = description
+        self.parameters = {
+            'type': 'object',
+            'properties': {},
+            'required': []
+        }
+
+    def add_param(self,
+                  name: str,
+                  description: str = '',
+                  param_type: Literal['string', 'integer', 'number', 'boolean',
+                                      'array', 'object'] | type = 'string',
+                  required: bool = True) -> None:
+        if isinstance(param_type, type):
+            param_type = ToolBuilder.type_map.get(param_type)
+            if not param_type:
+                raise ValueError(f"Unsupported Python type: {param_type}")
+        self.parameters['properties'][name] = {
+            'type': param_type,
+            'description': description
+        }
+        if required:
+            self.parameters['required'].append(name)
+
+    def build(self) -> dict:
+        return {
+            'type': 'function',
+            'function': {
+                'name': self.name,
+                'description': self.description,
+                'parameters': self.parameters
+            }
+        }
+
+
+class ToolRegistry:
+    def __init__(self):
+        self.tools = []
+
+    def register(self, tool_builder: ToolBuilder):
+        self.tools.append(tool_builder)
+
+    def build_all(self):
+        return [tool.build() for tool in self.tools]
 
 
 if __name__ == '__main__':

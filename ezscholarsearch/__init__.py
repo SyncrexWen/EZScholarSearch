@@ -16,7 +16,8 @@ from .search import (
 from .utils import (
     AsyncScholarly, PubDownloader,
     BasePDFParser, AdvancedPDFParser,
-    GrobidPDFParser
+    GrobidPDFParser, ToolBuilder,
+    ToolRegistry
 )
 from .datastructs import (
     Messages, MessagesMemory,
