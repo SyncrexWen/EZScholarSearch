@@ -1,14 +1,30 @@
 from .utils import PubDownloader
 from .datastructs import PubMeta
+from .AI import DataPacket
 
 from scholarly import scholarly
 from typing import Dict, List, Optional
 from time import sleep
 from warnings import warn
+from functools import wraps
 
 __all__ = [
     'ScholarSearch',
 ]
+
+
+def _safe_search_input(func):
+    @wraps(func)
+    def wrapper(self, data: DataPacket | str, *args, **kwargs):
+        if isinstance(data, DataPacket):
+            input_data = data.content or "\n---\n".join([
+                f"##{key}\n\n{value}"
+                for key, value in data.metadata.items()
+            ])
+        else:
+            input_data = data
+        return func(self, input_data, *args, **kwargs)
+    return wrapper
 
 
 class ScholarSearch:
@@ -22,6 +38,7 @@ class ScholarSearch:
     def config_api_email(email: str):
         PubDownloader.config_api_email(email)
 
+    @_safe_search_input
     def search_author(self, author_name: str, max_results: int = 1
                       ) -> List[Dict]:
         query = scholarly.search_author(author_name)
@@ -36,6 +53,7 @@ class ScholarSearch:
                 break
         return ret
 
+    @_safe_search_input
     def search_authors(self, *author_names: str) -> List[Dict]:
         ret = []
         for author_name in author_names:
@@ -45,6 +63,7 @@ class ScholarSearch:
             self._delay()
         return ret
 
+    @_safe_search_input
     def search_pubs(self, pubs: str,
                     max_results: int = 3
                     ) -> List[PubMeta]:
@@ -61,6 +80,7 @@ class ScholarSearch:
                 break
         return ret
 
+    @_safe_search_input
     def advanced_search(self, keyword: Optional[str] = None,
                         author: Optional[str] = None,
                         year_min: Optional[int] = None,

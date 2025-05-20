@@ -1,3 +1,6 @@
+# flake8: noqa: F401
+from __future__ import annotations
+
 from .datastructs import Messages
 from .utils import FILE_CONFIG, DynamicLogger
 
@@ -8,9 +11,10 @@ from typing import (Tuple, Dict, Any, Union,
                     Sequence)
 from functools import wraps
 from time import sleep, perf_counter
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod, ABCMeta
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterable as abcIterable
 
 import openai
 import inspect
@@ -593,10 +597,10 @@ class OpenAIClient:
         sys_prt("\b")
 
 
-def _safe_datapacket(func):
+def _strf_datapacket(func):
     if inspect.iscoroutinefunction(func):
         @wraps(func)
-        async def async_wrapper(data: str | dict | DataPacket):
+        async def async_wrapper(self, data: str | dict | DataPacket):
             if isinstance(data, str):
                 input_data = DataPacket(content=data)
             elif isinstance(data, dict):
@@ -605,11 +609,11 @@ def _safe_datapacket(func):
                 input_data = data
             else:
                 raise TypeError(f"Invalid Input Type {type(data)}")
-            return await func(input_data)
+            return await func(self, input_data)
         return async_wrapper
     else:
         @wraps(func)
-        def sync_wrapper(data: str | dict | DataPacket):
+        def sync_wrapper(self, data: str | dict | DataPacket):
             if isinstance(data, str):
                 input_data = DataPacket(content=data)
             elif isinstance(data, dict):
@@ -618,8 +622,34 @@ def _safe_datapacket(func):
                 input_data = data
             else:
                 raise TypeError(f"Invalid Input Type {type(data)}")
-            return func(input_data)
+            return func(self, input_data)
         return sync_wrapper
+
+
+def _sequencef_datapacket(func):
+    @wraps(func)
+    def wrapper(self, data: DataPacket | Any):
+        if isinstance(data, DataPacket):
+            if isinstance(data.content, abcIterable):
+                return func(self, data.content)
+            else:
+                return func(self, data.metadata.values)
+        else:
+            if isinstance(data, abcIterable):
+                return func(self, data)
+            else:
+                return func(self, [data])
+    return wrapper
+
+
+def _safe_datapacket(func):
+    @wraps(func)
+    def wrapper(self, data: Any):
+        if isinstance(data, DataPacket):
+            return func(self, data)
+        else:
+            return func(self, DataPacket(content=data))
+    return wrapper
 
 
 @dataclass
@@ -629,8 +659,9 @@ class DataPacket:
     Args:
         content: 数据内容
         metadata: 数据标记，用于传入的function calling，定义数据的结构
+        property: 数据标签
     '''
-    content: str
+    content: Any
     metadata: Dict[str, Any] = field(default_factory=dict)
     property: Dict[str, Any] = field(default_factory=dict)
 
@@ -904,7 +935,7 @@ class AIModel:
             raise ValueError("Invalid output type")
 
     @retry()
-    @_safe_datapacket
+    @_strf_datapacket
     def _ask(self, data: DataPacket) -> DataPacket:
         '''根据输入的data调用AI生成回复'''
         properties = data.property
@@ -974,9 +1005,9 @@ class AIModelFactory:
         )
 
 
-class CallableABCMeta(type):
+class CallableABCMeta(ABCMeta):
     def __call__(cls, data):
-        instance = cls()
+        instance = super().__call__()
         return instance(data)
 
 
@@ -987,13 +1018,13 @@ class WorkFlow(ABC, metaclass=CallableABCMeta):
         pass
 
     @abstractmethod
-    def forward(self, data: str | DataPacket):
+    def forward(self, data):
         pass
 
-    def post_execution(self, data: str | DataPacket):
+    def post_execution(self, data):
         pass
 
-    def __call__(self, data: str | DataPacket) -> DataPacket:
+    def __call__(self, data):
         data = self.forward(data)
         self.post_execution(data)
         return data
@@ -1039,7 +1070,7 @@ class DataProcessor:
         if not self.callbacks:
             raise TypeError("No valid callback provided or initialized.")
 
-    @_safe_datapacket
+    @_strf_datapacket
     def _print(self, data: DataPacket):
         if data.content:
             print(data.content)
@@ -1050,7 +1081,8 @@ class DataProcessor:
     def _noop(self, data):
         return data
 
-    def __call__(self, data: str | 'DataPacket'):
+    @_safe_datapacket
+    def __call__(self, data: DataPacket):
         properties = data.property
         for cb in self.callbacks:
             data = cb(data)
@@ -1067,10 +1099,10 @@ class SequentialBlock:
     def __init__(
         self,
         *AIModels: (
-            "AIModel"
-            | "DataProcessor"
-            | "SequentialBlock"
-            | "ParallelBlock"
+            AIModel
+            | DataProcessor
+            | SequentialBlock
+            | ParallelBlock
         )
     ):
         self.AIModels = AIModels
@@ -1087,10 +1119,10 @@ class ParallelBlock:
 
     def __init__(self,
                  **models: (
-                     "AIModel"
-                     | "DataProcessor"
-                     | "SequentialBlock"
-                     | "ParallelBlock"
+                     AIModel
+                     | DataProcessor
+                     | SequentialBlock
+                     | ParallelBlock
                  )):
         self.models = models
 
@@ -1127,10 +1159,11 @@ class SequenceProcessor:
     def __init__(self, callback: Callable):
         self.callback = callback
 
+    @_sequencef_datapacket
     def __call__(self, sequence: Iterable = None) -> List[Any]:
-        return [
+        return DataPacket(content=[
             self.callback(task) for task in sequence
-        ]
+        ])
 
 
 class MultiThreadsSequenceProcessor:
@@ -1139,6 +1172,7 @@ class MultiThreadsSequenceProcessor:
         self.callback = callback
         self.max_workers = max_workers
 
+    @_sequencef_datapacket
     def __call__(self, sequence: Iterable):
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            return list(executor.map(self.callback, sequence))
+            return DataPacket(content=list(executor.map(self.callback, sequence)))
