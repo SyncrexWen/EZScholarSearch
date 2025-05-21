@@ -23,3 +23,6 @@ test_*.py
 debug_*.py
 test_*.txt
 test_tmp_files/
+
+# else ignore
+.DS_Store
