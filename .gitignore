@@ -19,10 +19,11 @@ wheels/
 
 # test scripts
 tests/
-test_*.py
+**/test_*.py
 debug_*.py
-test_*.txt
+**/test_*.txt
 test_tmp_files/
+.pytest_cache
 
 # else ignore
 .DS_Store

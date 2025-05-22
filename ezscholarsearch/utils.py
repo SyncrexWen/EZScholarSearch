@@ -1,3 +1,5 @@
+# flake8: noqa: E501
+
 from __future__ import annotations
 
 from .datastructs import Paper, PubMeta
@@ -986,13 +988,19 @@ class ToolBuilder:
 
 class ToolRegistry:
     def __init__(self):
-        self.tools = []
+        self.tools = {}
 
-    def register(self, tool_builder: ToolBuilder):
-        self.tools.append(tool_builder)
+    def register(self, tool_builder: ToolBuilder, name: str):
+        self.tools[name] = tool_builder.build()
 
-    def build_all(self):
-        return [tool.build() for tool in self.tools]
+    def build_all(self, *names):
+        if names is None:
+            return list(self.tools.values())
+        else:
+            return [
+                self.tools.get(name, None)
+                for name in names
+            ]
 
 
 if __name__ == '__main__':

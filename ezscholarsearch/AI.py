@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod, ABCMeta
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterable as abcIterable
+from functools import reduce
 
 import openai
 import inspect
@@ -899,22 +900,23 @@ class AsyncParallelBlock:
 
 
 class AIModel:
-    '''特定功能的AI模型实例，支持system prompt和cuntion calling'''
+    '''特定功能的AI模型实例，支持system prompt和 tools call'''
     def __init__(self,
                  base_url: str, api_key: str,
                  model: str, system_prompt: str,
                  temperature: float = 0.8,
                  tools: List[Dict[str, Any]] = None,
                  tool_choice: str = 'auto',
-                 output_type: str = 'default'):
+                 output_type: Literal['default', 'datapacket', 'str'] = 'default',
+                 few_shot_messages: List[Dict[str, str]] = None):
         '''创建实例
 
         Args:
             base_url: API URL
             api_key: API Key
             temperature: AI回复的随机性
-            functions: 传入function calling的函数
-            function_call: 是否使用functions
+            tools: 传入tools call的函数
+            tool_call: 何时使用 tools call
         '''
         self._client = OpenAI(
             base_url=base_url,
@@ -924,6 +926,8 @@ class AIModel:
             'role': 'system',
             'content': system_prompt,
         }]
+        if few_shot_messages is not None:
+            self._messages.extend(few_shot_messages)
         self._config = {
             'model': model,
             'temperature': temperature,
@@ -936,7 +940,7 @@ class AIModel:
 
     @retry()
     @_strf_datapacket
-    def _ask(self, data: DataPacket, output_type: str = None) -> DataPacket:
+    def _ask(self, data: DataPacket, output_type: str = None, save_output: bool = False) -> DataPacket:
         '''根据输入的data调用AI生成回复（兼容 tools call 机制）'''
         input_message = data.content or "\n---\n".join([
             f"# {key}\n\n{value}"
@@ -997,7 +1001,9 @@ class AIModelFactory:
                  temperature: float = 0.8,
                  tools: List[Dict[str, Any]] = None,
                  tool_choice: str = 'auto',
-                 output_type: str = 'default'):
+                 output_type: Literal['default', 'datapacket', 'str'] = 'default',
+                 few_shot_messages: List[Dict[str, str]] = None,
+                 ):
         return AIModel(
             **self.config,
             system_prompt=system_prompt,
@@ -1005,6 +1011,7 @@ class AIModelFactory:
             tools=tools,
             tool_choice=tool_choice,
             output_type=output_type,
+            few_shot_messages=few_shot_messages,
         )
 
 
@@ -1015,7 +1022,7 @@ class CallableABCMeta(ABCMeta):
 
 
 class WorkFlow(ABC, metaclass=CallableABCMeta):
-
+    '''自定义工作流元类'''
     @abstractmethod
     def __init__(self):
         pass
@@ -1165,8 +1172,8 @@ class ParallelBlock:
 
 class SequenceProcessor:
     '''平行处理序列'''
-    def __init__(self, callback: Callable):
-        self.callback = callback
+    def __init__(self, *callbacks: Callable):
+        self.callback = lambda x: reduce(lambda acc, f: f(acc), callbacks, x)
 
     @_sequencef_datapacket
     def __call__(self, sequence: Iterable = None) -> List[Any]:
@@ -1177,8 +1184,8 @@ class SequenceProcessor:
 
 class MultiThreadsSequenceProcessor:
     '''多线程处理任务序列'''
-    def __init__(self, callback: Callable, max_workers: int = 5):
-        self.callback = callback
+    def __init__(self, *callbacks: Callable, max_workers: int = 5):
+        self.callback = lambda x: reduce(lambda acc, f: f(acc), callbacks, x)
         self.max_workers = max_workers
 
     @_sequencef_datapacket
