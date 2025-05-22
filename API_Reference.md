@@ -1,4 +1,4 @@
-# EZScholarSearch API References
+# EZScholarSearch API Reference
 
 ## AI Module
 
