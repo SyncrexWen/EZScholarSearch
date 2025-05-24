@@ -949,7 +949,7 @@ class ToolBuilder:
         dict: "object"
     }
 
-    def __init__(self, name: str, description: str = ''):
+    def __init__(self, name: str = None, description: str = ''):
         self.name = name
         self.description = description
         self.parameters = {
@@ -984,6 +984,16 @@ class ToolBuilder:
                 'parameters': self.parameters
             }
         }
+    
+    def from_dict(self, tool: dict) -> ToolBuilder:
+        tool = tool.get("function", tool)
+        self.name = tool.get('name', "")
+        self.description = tool.get("description", "")
+        self.parameters = tool.get("parameters", {"type": "object", "properties": {}, "required": []})
+        return self
+    
+    def __len__(self):
+        return len(self.parameters['properties'])
 
 
 class ToolRegistry:
