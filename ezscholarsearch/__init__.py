@@ -4,6 +4,7 @@ from . import AI as _AI
 from . import datastructs as _datastructs
 from . import search as _search
 from . import utils as _utils
+from . import mcps as _mcps
 
 from .AI import ( 
     OpenAIClient, AIModel, WorkFlow,
@@ -24,9 +25,15 @@ from .datastructs import (
     PubMeta
 )
 
+from .mcps import (
+    Model, Skill, FunctionSkill,
+    MCP
+)
+
 __all__ = (
     _AI.__all__
     + _datastructs.__all__
     + _search.__all__
     + _utils.__all__
+    + _mcps.__all__
 )

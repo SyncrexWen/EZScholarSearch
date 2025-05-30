@@ -5,7 +5,7 @@ from .AI import _safe_datapacket, DataPacket
 
 from openai import OpenAI
 from abc import ABC, abstractmethod
-from typing import (Dict, Callable, List, Literal,)
+from typing import (Dict, Callable, List, Literal, Any)
 from functools import wraps
 from collections import OrderedDict
 
@@ -24,17 +24,10 @@ __all__ = [
 def _check_tools(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
+        if not hasattr(self, 'tools'):
+            raise KeyError(f"Object {self} doesn't have the attribute 'tools'")
         if not self.tools:
             raise ValueError("No tool registered")
-        return func(self, *args, **kwargs)
-    return wrapper
-
-
-def _check_agents(func):
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        if not self.agents:
-            raise ValueError("No agent registered")
         return func(self, *args, **kwargs)
     return wrapper
 
@@ -167,17 +160,19 @@ class Model:
         name: 模型的名称
         role: 模型的功能
         model: 使用的模型
-        client: OpenAI 客户端
+        base_url: base URL
+        api_key: AI API Key
         system_prompt: 系统级提示词
         temperature: float = 0.8: AI生成文字的随机性，应在0.0-2.0之间，数值越大随机性越强
     '''
-    def __init__(self, name: str, role: str, model: str, client: OpenAI,
-                 system_prompt: str = None, temperature: float = 0.8):
+    def __init__(self, name: str, role: str, model: str, base_url: str,
+                 api_key: str, system_prompt: str = None,
+                 temperature: float = 0.8):
         self.name = name
         self.role = role
         self.model = model
-        self.client = client
-        self.memory = [{"role": "system", "content": system_prompt or f"你是{self.role}"}] # NOQA
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.memory = [{"role": "system", "content": system_prompt or f"你是一个能够{self.role}的助手"}] # NOQA
         if not (0.0 <= temperature <= 2.0):
             warnings.warn("Temperature limit exceeded, setting to default.")
             self.temperature = 0.8
@@ -239,11 +234,21 @@ class Skill(ABC):
         """
         pass
 
+    def describe(self):
+        return {
+            'name': self.name,
+            'role': self.role
+        }
+
     def __str__(self):
         desc = "<Skill object>"
         desc += f"\n    name: {self.name}"
         desc += f"\n    role: {self.role}"
         return desc
+
+    @_safe_datapacket
+    def __call__(self, data: DataPacket, *args, **kwargs) -> DataPacket:
+        return self.call(data, *args, **kwargs)
 
 
 class FunctionSkill(Skill):
@@ -271,38 +276,45 @@ class Agent:
         planner_mode: ['llm', 'literal']: 内建选择工具
         aggregator: 如何整合回答
         aggregator_mode: ['md', 'default', 'noop']: 内建整合器工具
-        client: OpenAI客户端，如果使用 llm planner 则必须传入
+        base_url: AI API URl，如果使用 llm planner 则必须传入
+        api_key: AI API Key，如果使用 llm planner 则必须传入
         model: 使用的模型，如果使用 llm planner 则必须传入
     '''
     def __init__(self, planner: Callable[[DataPacket], List[str]] = None,
                  planner_mode: Literal['llm', 'literal'] = 'literal',
-                 aggregator: Callable[[Dict[str, DataPacket]], str | dict] = None, # NOQA
+                 aggregator: Callable[[Dict[str, DataPacket]], Any] = None, # NOQA
                  aggregator_mode: Literal['md', 'default', 'noop'] = 'default',
-                 client: OpenAI = None, model: str = None):
+                 base_url: str = None, api_key: str = None, model: str = None):
         self.planner = planner or self._default_planner(planner_mode)
         self.aggregator = aggregator or self._default_aggregator(aggregator_mode) # NOQA
-        self.tools: Dict[str, Model | Skill] = {}
-        self.client = client
+        self.tools: Dict[str, Callable] = {}
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
+        self.roles = {}
         self._build_tool()
 
-    def register(self, name: str, tool: Model | Skill) -> None:
+    def register(self, name: str, role: str, tool: Callable) -> None:
         '''注册工具或模型至 Agent'''
         if name in self.tools and not self.tools[name] is tool:
             raise KeyError(f"Name {name} is already registered to {tool}")
         self.tools[name] = tool
+        self.roles[name] = role
         self._tool.add_param(
             name=name,
-            description=f"这是一个功能为{tool.role}的工具",
+            description=f"这是一个功能为{role}的工具",
             param_type='boolean'
         )
 
     @_safe_datapacket
-    def run(self, data: DataPacket):
+    def call(self, data: DataPacket):
         '''选择输入、综合输出'''
         tools_name = self.planner(data)
+        if len(tools_name) == 0:
+            return None
+        if 'no_tool_available' in tools_name:
+            del tools_name['no_tool_available']
         results = {
-            name: self.tools[name].call(data)
+            name: self.tools[name](data)
             for name in tools_name
         }
         aggregated_result = self.aggregator(results)
@@ -310,10 +322,13 @@ class Agent:
             return DataPacket(content=aggregated_result)
         elif isinstance(aggregated_result, dict):
             return aggregated_result
+        else:
+            return DataPacket(content=aggregated_result)
 
     @_check_tools
     def role(self) -> str:
-        return "+ " + "\n+ ".join([tool.role for tool in self.tools])
+        return "+ " + "\n+ ".join([f"{name}: {role}"
+                                   for name, role in self.roles.items()])
 
     def __str__(self) -> str:
         desc = '<Agent object>\n'
@@ -321,7 +336,7 @@ class Agent:
                                for name, tool in self.tools.items()])
 
     def __call__(self, data: str | DataPacket):
-        return self.run(data)
+        return self.call(data)
 
     @_check_tools
     def _planner_llm(self, data: DataPacket) -> List[str]:
@@ -337,7 +352,7 @@ class Agent:
         response = self.client.chat.completions.create(
             messages=messages,
             model=self.model,
-            tools=self._tool.build(),
+            tools=[self._tool.build()],
             tool_choice='required'
         )
 
@@ -411,7 +426,7 @@ class Agent:
             self._tool.add_param(
                 name="no_tool_available",
                 description="是否所有给你的工具都不合适处理这个问题",
-                param_type='boolean'
+                param_type='boolean',
             )
 
 
@@ -419,34 +434,36 @@ class MCP:
     '''Multi-Agent 控制器 (Meta Control Policy)'''
 
     def __init__(self, planner: Callable[[str], List[str]] = None,
-                 client: OpenAI = None, model: str = None):
+                 base_url: str = None, api_key: str = None, model: str = None):
         '''
         Args:
             planner: 高层调度函数，根据用户输入文本选择合适 Agent 名称列表
         '''
-        self.agents: Dict[str, Agent] = OrderedDict()
+        self.tools: Dict[str, Agent] = OrderedDict()
         self.planner = planner or self._default_planner
         self._build_tool()
-        self.client = client
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
+        self.roles = {}
 
-    def register(self, name: str, agent: Agent):
+    def register(self, name: str, role: str, agent: Agent):
         '''注册 Agent'''
         if name in self.agents and not self.agents[name] is agent:
             raise KeyError(f"Agent '{name}' is already registered")
         self.agents[name] = agent
         self._tool.add_param(
             name=name,
-            description=f"这是一个功能为{agent.role()}的工具",
+            description=f"这是一个功能为{role}的工具",
             param_type='boolean'
         )
+        self.roles[name] = role
 
-    @_check_agents
+    @_check_tools
     def roles(self) -> str:
         '''展示所有 Agent 能力'''
         return "\n".join([
-            f"{name}:\n{agent.role()}"
-            for name, agent in self.agents.items()
+            f"{name}<{type(self.tools[name])}>:\n{role}"
+            for name, role in self.roles.items()
         ])
 
     @_safe_datapacket
@@ -466,7 +483,7 @@ class MCP:
         return results
 
     @_safe_datapacket
-    @_check_agents
+    @_check_tools
     def _default_planner(self, data: DataPacket) -> List[str]:
         '''llm 工具选择器'''
         if self.client is None or self.model is None:

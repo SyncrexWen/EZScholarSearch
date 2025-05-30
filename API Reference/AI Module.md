@@ -31,7 +31,7 @@ output_type, few_shot_messages)
 
 **参数**
 
-*base_url*: str, api_key: str: 调用 AI API 的 url 和 API Key
+*base_url*: str, *api_key*: str: 调用 AI API 的 url 和 API Key
 
 *model*: str: AI API 的模型信息
 

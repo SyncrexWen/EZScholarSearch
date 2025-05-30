@@ -19,11 +19,15 @@ wheels/
 
 # test scripts
 tests/
-**/test_*.py
+test_*.py
 debug_*.py
-**/test_*.txt
+test_*.txt
 test_tmp_files/
 .pytest_cache
+
+# Explicitly include test scripts in example_test_scripts folder
+!example_test_scripts/
+!example_test_scripts/**/*
 
 # else ignore
 .DS_Store
