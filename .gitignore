@@ -26,8 +26,9 @@ test_tmp_files/
 .pytest_cache
 
 # Explicitly include test scripts in example_test_scripts folder
-!example_test_scripts/
-!example_test_scripts/**/*
+!example test scripts/
+!example test scripts/test_*.py
+!example test scripts/test_*.txt
 
 # else ignore
 .DS_Store
