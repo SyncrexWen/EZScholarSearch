@@ -521,7 +521,7 @@ class BasePDFParser:
             结论
         """
         conclusion_text = ""
-        found_conclusion = False
+        collecting = False
         with BasePDFParser._load_pdf(pdf_path_or_url) as doc:
             for page in doc:
                 text = page.get_text("text")
@@ -536,11 +536,27 @@ class BasePDFParser:
                 )
 
                 if conclusion_match:
-                    conclusion_text = conclusion_match.group(2).strip()
-                    found_conclusion = True
-                elif found_conclusion:
-                    conclusion_text += "\n" + text.strip()
+                    collecting = True
+                    start_index = conclusion_match.start()
+                    text = text[start_index:]
 
+                if collecting:
+                    acknowledgement_match = re.search(
+                    (
+                        r'(Acknowledgement|Acknowledgements|References|Bibliography|Acknowledgments|Acknowledgment)'
+                        r'\s*\n'
+                        r'(.+?)(?=\n[A-Z]+\s*\n|\Z)'
+                    ),
+                    text, re.DOTALL | re.IGNORECASE
+                )
+                    if acknowledgement_match:
+                        end_index = acknowledgement_match.start()
+                        conclusion_text += text[:end_index].strip() + "\n"
+                        break
+                    else:
+                        conclusion_text += text.strip() + "\n"
+        conclusion_text = re.sub(r'\n{3,}', '\n\n', conclusion_text)  # 减少空行
+        conclusion_text = conclusion_text.strip()
         return conclusion_text
 
     @staticmethod
@@ -652,8 +668,7 @@ class AdvancedPDFParser:
                         continue
                     match = re.search(
                         (
-                            r'(?i)\babstract\b\s*[\n\r]+'
-                            r'(.+?)(?=\n\s*(?:\w+\s*:|\w+\s*\n|$))'
+                            r'(?i)(?:Abstract|摘要)\s*[\n\r:]*([\s\S]+?)(?=\n\s*(?:[1-9]\.|Introduction|关键词|\b\w+\s*:|\Z))'
                         ),
                         text,
                         re.DOTALL | re.IGNORECASE | re.MULTILINE
@@ -691,9 +706,7 @@ class AdvancedPDFParser:
                         if not line:
                             continue
                         if re.match(
-                            r'(?i)^\s*('
-                            r'conclusion|conclusions|summary|discussion'
-                            r')\s*$',
+                            r'(?i)(^\s*\d*\.?\s*)(conclusions?|discussion)\b',
                             line
                         ):
                             in_conclusion = True
