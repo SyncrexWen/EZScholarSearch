@@ -15,14 +15,15 @@ from .search import (
     ScholarSearch
 )
 from .utils import (
-    AsyncScholarly, PubDownloader,
+    PubDownloader,
     BasePDFParser, AdvancedPDFParser,
     GrobidPDFParser, ToolBuilder,
     ToolRegistry
 )
 from .datastructs import (
     Messages, MessagesMemory,
-    PubMeta
+    PubMeta, BibMeta,
+    Paper, PaperSection
 )
 
 from .mcps import (
